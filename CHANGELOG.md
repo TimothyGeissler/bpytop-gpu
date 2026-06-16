@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (bpytop-gpu fork)
+
+* Added: GPU monitoring box showing utilization and memory usage, toggled with the "5" key
+* Added: Pluggable GPU backends, NVIDIA via NVML (pynvml) and Apple Silicon via ioreg
+* Added: "gpu" as a valid value for shown_boxes and the -b argument
+
 ## v1.0.68
 
 * Fixed: typos discovered by codespell, by @cclauss

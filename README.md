@@ -93,6 +93,24 @@ Python port and continuation of [bashtop](https://github.com/aristocratos/bashto
 * Auto scaling graph for network usage.
 * Shows message in menu if new version is available
 * Shows current read and write speeds for disks
+* GPU monitoring box showing utilization and memory usage (NVIDIA and Apple Silicon).
+
+## GPU monitoring
+
+This fork adds an optional GPU box that displays GPU utilization and memory usage.
+
+Supported backends (auto-detected at startup, first available wins):
+
+* **NVIDIA** via the NVML library. Requires the `pynvml` package and a working NVIDIA driver.
+  Install with `pip3 install pynvml` (or `pip3 install bpytop[nvidia]`).
+* **Apple Silicon** via `ioreg`. No extra dependencies or root privileges required.
+  Memory is reported from the unified memory pool.
+
+The GPU box is hidden by default. Toggle it with the `5` key, the options menu
+(`shown_boxes`), or by adding `gpu` to `shown_boxes` in the config / `-b` argument,
+e.g. `bpytop -b "cpu gpu mem proc"`. If no supported GPU is detected the box shows
+a "No supported GPU detected" message. Optional fields (temperature, power) are shown
+when the backend provides them. Multi-GPU systems currently show the first GPU.
 
 ## Themes
 

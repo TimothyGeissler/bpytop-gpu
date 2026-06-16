@@ -37,6 +37,10 @@ except Exception as e: errors.append(f'{e}')
 try: import psutil # type: ignore
 except Exception as e: errors.append(f'{e}')
 
+#? Optional NVIDIA GPU monitoring backend, absence is not an error
+try: import pynvml # type: ignore
+except Exception: pynvml = None
+
 SELF_START = time()
 
 SYSTEM: str
@@ -97,7 +101,7 @@ theme_background=$theme_background
 #* Sets if 24-bit truecolor should be used, will convert 24-bit colors to 256 color (6x6x6 color cube) if false.
 truecolor=$truecolor
 
-#* Manually set which boxes to show. Available values are "cpu mem net proc", separate values with whitespace.
+#* Manually set which boxes to show. Available values are "cpu mem net proc gpu", separate values with whitespace.
 shown_boxes="$shown_boxes"
 
 #* Update time in milliseconds, increases automatically if set below internal loops processing time, recommended 2000 ms or above for better sample times for graphs.
@@ -592,7 +596,7 @@ class Config:
 			self.warnings.append(f'Config key "cpu_sensor" does not contain an available sensor!')
 		if "shown_boxes" in new_config and not new_config["shown_boxes"] == "":
 			for box in new_config["shown_boxes"].split(): #type: ignore
-				if not box in ["cpu", "mem", "net", "proc"]:
+				if not box in ["cpu", "mem", "net", "proc", "gpu"]:
 					new_config["shown_boxes"] = "_error_"
 					self.warnings.append(f'Config key "shown_boxes" contains invalid box names!')
 					break
@@ -640,7 +644,7 @@ except Exception as e:
 if ARG_BOXES:
 	_new_boxes: List = []
 	for _box in ARG_BOXES.split():
-		if _box in ["cpu", "mem", "net", "proc"]:
+		if _box in ["cpu", "mem", "net", "proc", "gpu"]:
 			_new_boxes.append(_box)
 	CONFIG.shown_boxes = " ".join(_new_boxes)
 	del _box, _new_boxes
@@ -694,7 +698,7 @@ class Term:
 			for box_class in Box.__subclasses__():
 				for box_name in Box.boxes:
 					if box_name in str(box_class).capitalize():
-						if not (box_name == "cpu" and "proc" in Box.boxes) and not (box_name == "net" and "mem" in Box.boxes) and w_p + box_class.width_p <= 100:
+						if not (box_name in ["cpu", "gpu"] and "proc" in Box.boxes) and not (box_name == "net" and "mem" in Box.boxes) and w_p + box_class.width_p <= 100:
 							w_p += box_class.width_p
 							cls.min_width += getattr(box_class, "min_w", 0)
 						if not (box_name in ["mem", "net"] and "proc" in Box.boxes) and h_p + box_class.height_p <= 100:
@@ -1681,6 +1685,7 @@ class Box:
 	out: str
 	bg: str
 	_b_cpu_h: int
+	_b_gpu_h: int = 0
 	_b_mem_h: int
 	redraw_all: bool
 	buffers: List[str] = []
@@ -1759,6 +1764,7 @@ class Box:
 				f'{Mv.d(1)}{Mv.l(18)}{Fx.b}[2] {Fx.ub}Toggle MEM box'
 				f'{Mv.d(1)}{Mv.l(18)}{Fx.b}[3] {Fx.ub}Toggle NET box'
 				f'{Mv.d(1)}{Mv.l(18)}{Fx.b}[4] {Fx.ub}Toggle PROC box'
+				f'{Mv.d(1)}{Mv.l(18)}{Fx.b}[5] {Fx.ub}Toggle GPU box'
 				f'{Mv.d(1)}{Mv.l(19)}{Fx.b}[m] {Fx.ub}Cycle presets'
 				f'{Mv.d(1)}{Mv.l(17)}{Fx.b}[q] Quit {Fx.ub}{Term.bg}{Term.fg}')
 
@@ -2034,6 +2040,106 @@ class CpuBox(Box, SubBox):
 		Draw.buffer(cls.buffer, f'{out_misc}{out}{Term.fg}', only_save=Menu.active)
 		cls.resized = cls.redraw = cls.clock_block = False
 
+class GpuBox(Box, SubBox):
+	name = "gpu"
+	num = 5
+	x = 1
+	y = 1
+	height_p = 20
+	width_p = 100
+	min_w: int = 36
+	min_h: int = 6
+	resized: bool = True
+	redraw: bool = False
+	buffer: str = "gpu"
+	graph_util: Any = None
+	meter_util: Any = None
+	meter_mem: Any = None
+	Box.buffers.append(buffer)
+
+	@classmethod
+	def _calc_size(cls):
+		if not "gpu" in cls.boxes:
+			Box._b_gpu_h = 0
+			cls.width = Term.width
+			return
+		cls.width = round(Term.width * cls.width_p / 100)
+		#* Reserve the minimum height needed by whichever boxes stack below the GPU row
+		reserve: int = 0
+		if "proc" in cls.boxes: reserve = ProcBox.min_h
+		left_col: int = (MemBox.min_h if "mem" in cls.boxes else 0) + (NetBox.min_h if "net" in cls.boxes else 0)
+		reserve = max(reserve, left_col)
+		if reserve == 0:
+			#* No boxes stacked under the GPU row, let it fill the remaining height
+			cls.height = Term.height - Box._b_cpu_h
+		else:
+			cls.height = round(Term.height * cls.height_p / 100)
+			if Box._b_cpu_h + cls.height > Term.height - reserve:
+				cls.height = Term.height - Box._b_cpu_h - reserve
+		if cls.height < cls.min_h: cls.height = cls.min_h
+		Box._b_gpu_h = cls.height
+		cls.x = 1
+		cls.y = Box._b_cpu_h + 1
+		cls.resized = True
+
+	@classmethod
+	def _draw_bg(cls) -> str:
+		if not "gpu" in cls.boxes: return ""
+		return f'{create_box(box=cls, line_color=THEME.cpu_box)}'
+
+	@classmethod
+	def _draw_fg(cls):
+		if not "gpu" in cls.boxes: return
+		gpu = GpuCollector
+		if gpu.redraw: cls.redraw = True
+		out: str = ""
+		x, y, w, h = cls.x + 1, cls.y + 1, cls.width - 2, cls.height - 2
+
+		if not gpu.got_gpu:
+			if cls.resized or cls.redraw:
+				out += f'{Mv.to(y + h // 2, x + 2)}{THEME.inactive_fg}No supported GPU detected{Term.fg}'
+				Draw.buffer(cls.buffer, f'{out}{Term.fg}', only_save=Menu.active)
+				cls.resized = cls.redraw = False
+			return
+
+		info_w: int = min(34, max(20, w // 3))
+		graph_w: int = w - info_w - 2
+		if graph_w < 1: graph_w = 1
+		util_val: int = gpu.gpu_util[-1] if gpu.gpu_util else 0
+
+		if cls.resized or cls.redraw or cls.graph_util is None:
+			cls.graph_util = Graph(graph_w, h, THEME.gradient["cpu"], gpu.gpu_util, round_up_low=True)
+			cls.meter_util = Meter(util_val, info_w - 9, "cpu")
+			cls.meter_mem = Meter(gpu.mem_percent, info_w - 9, "used")
+
+		#* Utilization graph filling the left side of the box
+		out += f'{Mv.to(y, x)}{cls.graph_util(None if cls.resized else util_val)}'
+
+		#* Right hand info panel
+		ix: int = x + graph_w + 2
+		out += (f'{Mv.to(y, ix)}{THEME.main_fg}{Fx.b}GPU {Fx.ub}{cls.meter_util(util_val)}'
+				f'{THEME.gradient["cpu"][util_val]}{util_val:>4}{THEME.main_fg}%')
+		if h > 2:
+			out += (f'{Mv.to(y + 2, ix)}{THEME.main_fg}{Fx.b}MEM {Fx.ub}{cls.meter_mem(gpu.mem_percent)}'
+					f'{THEME.gradient["used"][gpu.mem_percent]}{gpu.mem_percent:>4}{THEME.main_fg}%')
+		if h > 3 and gpu.mem_total:
+			out += f'{Mv.to(y + 3, ix)}{THEME.main_fg}{floating_humanizer(gpu.mem_used)} / {floating_humanizer(gpu.mem_total)}'
+		extras: List[str] = []
+		if gpu.has_temp and gpu.temp >= 0:
+			t, unit = temperature(gpu.temp, CONFIG.temp_scale)
+			extras.append(f'{t}{unit}')
+		if gpu.has_power and gpu.power >= 0:
+			extras.append(f'{gpu.power}W')
+		if extras and h > 4:
+			out += f'{Mv.to(y + 4, ix)}{THEME.main_fg}{"  ".join(extras)}'
+
+		#* GPU name in the box title bar
+		if (cls.resized or cls.redraw) and gpu.name:
+			out += f'{Mv.to(cls.y, x + 8)}{THEME.cpu_box(Symbol.title_left)}{Fx.b}{THEME.title(gpu.name[:cls.width - 12])}{Fx.ub}{THEME.cpu_box(Symbol.title_right)}'
+
+		Draw.buffer(cls.buffer, f'{out}{Term.fg}', only_save=Menu.active)
+		cls.resized = cls.redraw = False
+
 class MemBox(Box):
 	name = "mem"
 	num = 2
@@ -2082,9 +2188,9 @@ class MemBox(Box):
 
 		cls.width = round(Term.width * width_p / 100)
 		cls.height = round(Term.height * height_p / 100) + 1
-		if cls.height + Box._b_cpu_h > Term.height: cls.height = Term.height - Box._b_cpu_h
+		if cls.height + Box._b_cpu_h + Box._b_gpu_h > Term.height: cls.height = Term.height - Box._b_cpu_h - Box._b_gpu_h
 		Box._b_mem_h = cls.height
-		cls.y = Box._b_cpu_h + 1
+		cls.y = Box._b_cpu_h + Box._b_gpu_h + 1
 		if CONFIG.show_disks:
 			cls.mem_width = ceil((cls.width - 3) / 2)
 			cls.disks_width = cls.width - cls.mem_width - 3
@@ -2355,7 +2461,7 @@ class NetBox(Box, SubBox):
 			width_p = cls.width_p
 
 		cls.width = round(Term.width * width_p / 100)
-		cls.height = Term.height - Box._b_cpu_h - Box._b_mem_h
+		cls.height = Term.height - Box._b_cpu_h - Box._b_gpu_h - Box._b_mem_h
 		cls.y = Term.height - cls.height + 1
 		cls.box_width = 27 if cls.width > 45 else 19
 		cls.box_height = 9 if cls.height > 10 else cls.height - 2
@@ -2482,9 +2588,9 @@ class ProcBox(Box):
 
 		cls.width = round(Term.width * width_p / 100)
 		cls.height = round(Term.height * height_p / 100)
-		if cls.height + Box._b_cpu_h > Term.height: cls.height = Term.height - Box._b_cpu_h
+		if cls.height + Box._b_cpu_h + Box._b_gpu_h > Term.height: cls.height = Term.height - Box._b_cpu_h - Box._b_gpu_h
 		cls.x = Term.width - cls.width + 1
-		cls.y = Box._b_cpu_h + 1
+		cls.y = Box._b_cpu_h + Box._b_gpu_h + 1
 		cls.current_y = cls.y
 		cls.current_h = cls.height
 		cls.select_max = cls.height - 3
@@ -3252,6 +3358,174 @@ class CpuCollector(Collector):
 	@classmethod
 	def _draw(cls):
 		CpuBox._draw_fg()
+
+class GpuStats:
+	'''Container for a single GPU sample. Utilization and memory are required, the rest is optional.'''
+	def __init__(self):
+		self.utilization: int = 0		#* GPU core utilization in percent (0-100)
+		self.mem_used: int = 0			#* Used GPU/accelerator memory in bytes
+		self.mem_total: int = 0			#* Total GPU/accelerator memory in bytes
+		self.mem_percent: int = 0		#* Used memory as percent of total (0-100)
+		self.temp: int = -1				#* Temperature in celsius, -1 if unavailable
+		self.power: int = -1			#* Power draw in watts, -1 if unavailable
+		self.has_temp: bool = False
+		self.has_power: bool = False
+
+class GpuBackend:
+	'''Interface for a GPU data source. Subclasses implement available()/get_name()/sample().'''
+	name: str = "none"
+	def available(self) -> bool: return False
+	def get_name(self) -> str: return ""
+	def sample(self): return None
+
+class NvmlGpuBackend(GpuBackend):
+	'''NVIDIA GPU backend using the NVML library through pynvml. Tested on systems with NVIDIA drivers.'''
+	name = "nvidia"
+	def __init__(self):
+		self._handle = None
+		self._initialized = False
+
+	def available(self) -> bool:
+		if pynvml is None: return False
+		try:
+			pynvml.nvmlInit()
+			if pynvml.nvmlDeviceGetCount() < 1:
+				return False
+			self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+			self._initialized = True
+			return True
+		except Exception:
+			return False
+
+	def get_name(self) -> str:
+		try:
+			n = pynvml.nvmlDeviceGetName(self._handle)
+			return n.decode("utf-8", "ignore") if isinstance(n, bytes) else str(n)
+		except Exception:
+			return "NVIDIA GPU"
+
+	def sample(self):
+		if not self._initialized: return None
+		try:
+			st = GpuStats()
+			util = pynvml.nvmlDeviceGetUtilizationRates(self._handle)
+			st.utilization = int(util.gpu)
+			mem = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
+			st.mem_used = int(mem.used)
+			st.mem_total = int(mem.total)
+			st.mem_percent = round(st.mem_used / st.mem_total * 100) if st.mem_total else 0
+			try:
+				st.temp = int(pynvml.nvmlDeviceGetTemperature(self._handle, pynvml.NVML_TEMPERATURE_GPU))
+				st.has_temp = True
+			except Exception:
+				pass
+			try:
+				st.power = round(pynvml.nvmlDeviceGetPowerUsage(self._handle) / 1000)
+				st.has_power = True
+			except Exception:
+				pass
+			return st
+		except Exception as e:
+			errlog.exception(f'NVML GPU sample failed: {e}')
+			return None
+
+class AppleGpuBackend(GpuBackend):
+	'''Apple Silicon GPU backend, reads utilization and unified memory usage from ioreg (no root required).'''
+	name = "apple"
+	_util_re = re.compile(r'"Device Utilization %"=(\d+)')
+	_mem_re = re.compile(r'"In use system memory"=(\d+)')
+
+	def _read_ioreg(self) -> str:
+		try:
+			return subprocess.check_output(["ioreg", "-r", "-c", "AGXAccelerator", "-d", "1"], universal_newlines=True, stderr=subprocess.DEVNULL)
+		except Exception:
+			return ""
+
+	def available(self) -> bool:
+		if SYSTEM != "MacOS" or not which("ioreg"):
+			return False
+		text = self._read_ioreg()
+		return bool(self._util_re.search(text) or self._mem_re.search(text))
+
+	def get_name(self) -> str:
+		return "Apple GPU"
+
+	def sample(self):
+		text = self._read_ioreg()
+		if not text:
+			return None
+		try:
+			st = GpuStats()
+			util_match = self._util_re.search(text)
+			st.utilization = int(util_match.group(1)) if util_match else 0
+			mem_match = self._mem_re.search(text)
+			st.mem_used = int(mem_match.group(1)) if mem_match else 0
+			#* Apple uses unified memory, total is taken from system RAM
+			st.mem_total = int(psutil.virtual_memory().total)
+			st.mem_percent = round(st.mem_used / st.mem_total * 100) if st.mem_total else 0
+			return st
+		except Exception as e:
+			errlog.exception(f'Apple GPU sample failed: {e}')
+			return None
+
+class GpuCollector(Collector):
+	'''Collects GPU utilization and memory usage from the first available backend (NVIDIA or Apple Silicon)'''
+	gpu_util: List[int] = []
+	gpu_mem: List[int] = []
+	name: str = ""
+	mem_used: int = 0
+	mem_total: int = 0
+	mem_percent: int = 0
+	temp: int = -1
+	power: int = -1
+	has_temp: bool = False
+	has_power: bool = False
+	got_gpu: bool = False
+	backend: Any = None
+	buffer: str = GpuBox.buffer
+	redraw: bool = False
+
+	@classmethod
+	def get_gpu(cls):
+		'''Detect and select the first available GPU backend'''
+		cls.got_gpu = False
+		cls.backend = None
+		for backend in (NvmlGpuBackend(), AppleGpuBackend()):
+			try:
+				if backend.available():
+					cls.backend = backend
+					cls.name = backend.get_name()
+					cls.got_gpu = True
+					errlog.info(f'GPU monitoring enabled via "{backend.name}" backend ({cls.name})')
+					return
+			except Exception as e:
+				errlog.warning(f'GPU backend "{getattr(backend, "name", "?")}" check failed: {e}')
+		errlog.info("No supported GPU backend found, GPU box will be empty if shown.")
+
+	@classmethod
+	def _collect(cls):
+		if not cls.got_gpu or cls.backend is None:
+			return
+		stats = cls.backend.sample()
+		if stats is None:
+			return
+		cls.gpu_util.append(min(100, max(0, int(stats.utilization))))
+		if len(cls.gpu_util) > Term.width * 4:
+			del cls.gpu_util[0]
+		cls.mem_used = stats.mem_used
+		cls.mem_total = stats.mem_total
+		cls.mem_percent = min(100, max(0, int(stats.mem_percent)))
+		cls.gpu_mem.append(cls.mem_percent)
+		if len(cls.gpu_mem) > Term.width * 4:
+			del cls.gpu_mem[0]
+		cls.temp = stats.temp
+		cls.has_temp = stats.has_temp
+		cls.power = stats.power
+		cls.has_power = stats.has_power
+
+	@classmethod
+	def _draw(cls):
+		GpuBox._draw_fg()
 
 class MemCollector(Collector):
 	'''Collects memory and disks information'''
@@ -4310,7 +4584,7 @@ class Menu:
 				"shown_boxes" : [
 					'Manually set which boxes to show.',
 					'',
-					'Available values are "cpu mem net proc".',
+					'Available values are "cpu mem net proc gpu".',
 					'Seperate values with whitespace.',
 					'',
 					'Toggle between presets with mode key "m".'],
@@ -4797,7 +5071,7 @@ class Menu:
 							elif selected == "shown_boxes":
 								new_boxes: List = []
 								for box in input_val.split():
-									if box in ["cpu", "mem", "net", "proc"]:
+									if box in ["cpu", "mem", "net", "proc", "gpu"]:
 										new_boxes.append(box)
 								CONFIG.shown_boxes = " ".join(new_boxes)
 								Box.view_mode = "user"
@@ -5376,7 +5650,7 @@ def temperature(value: int, scale: str = "celsius") -> Tuple[int, str]:
 def process_keys():
 	mouse_pos: Tuple[int, int] = (0, 0)
 	filtered: bool = False
-	box_keys = {"1" : "cpu", "2" : "mem", "3" : "net", "4" : "proc"}
+	box_keys = {"1" : "cpu", "2" : "mem", "3" : "net", "4" : "proc", "5" : "gpu"}
 	while Key.has_key():
 		key = Key.get()
 		found: bool = True
@@ -5589,6 +5863,7 @@ def main():
 		Draw.buffer("+init!", f'{Mv.restore}{Fx.trans("Doing some maths and drawing... ")}{Mv.save}')
 	try:
 		if CONFIG.check_temp: CpuCollector.get_sensors()
+		GpuCollector.get_gpu()
 		Box.calc_sizes()
 		Box.draw_bg(now=False)
 	except Exception as e:
