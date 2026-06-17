@@ -1,11 +1,12 @@
 [tool.poetry]
-name = "bpytop"
+name = "gpytop"
 version = "1.0.68"
-description = "Resource monitor that shows usage and stats for processor, memory, disks, network and processes."
+description = "Fork of bpytop resource monitor with added GPU monitoring (NVIDIA and Apple Silicon)."
 readme = "README.md"
 authors = ["Aristocratos <jakob@qvantnet.com>"]
 homepage = "https://github.com/aristocratos/bpytop"
 license = "Apache-2.0"
+packages = [{ include = "bpytop.py" }]
 include = ["bpytop-themes/*.theme"]
 
 [tool.poetry.dependencies]
@@ -26,7 +27,6 @@ more-itertools = "^8.7.0"
 
 [tool.poetry.scripts]
 gpytop = "bpytop:main"
-bpytop = "bpytop:main"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

@@ -23,7 +23,24 @@
 
 ## Installation
 
-Install the dependencies and the `gpytop` terminal command in one step, from the repo root.
+One command installs the dependencies and the `gpytop` terminal command. It auto-detects
+an NVIDIA GPU and enables NVIDIA support when present:
+
+``` bash
+curl -fsSL https://raw.githubusercontent.com/TimothyGeissler/bpytop-gpu/master/install.sh | bash
+```
+
+Then run it from anywhere:
+
+``` bash
+gpytop
+```
+
+> If `gpytop` isn't found afterwards, restart your shell or run `pipx ensurepath`
+> (for pip `--user` installs, make sure `~/.local/bin` is on your `PATH`).
+
+<details>
+<summary>Manual installation from a local clone</summary>
 
 Recommended (isolated, automatically puts the command on your `PATH`):
 
@@ -40,21 +57,23 @@ pip3 install --user ".[nvidia]"
 * On **Apple Silicon** or any non-NVIDIA system, drop the extra: `pipx install .`
 * For development (tracks edits to the repo): `pip3 install -e ".[nvidia]"`
 
-Then run it from anywhere:
-
-``` bash
-gpytop
-```
-
-> If `gpytop` isn't found afterwards, your user script directory isn't on `PATH`.
-> Run `pipx ensurepath`, or add `~/.local/bin` to your `PATH` for pip `--user` installs.
-
 You can also run it directly without installing:
 
 ``` bash
 pip3 install -r requirements.txt
 python3 bpytop.py
 ```
+
+</details>
+
+### Uninstall
+
+``` bash
+pipx uninstall gpytop          # if installed with pipx
+pip3 uninstall gpytop          # if installed with pip
+```
+
+The config file at `~/.config/bpytop/` is left in place; remove it manually to fully clean up.
 
 ## What's different in this fork
 
