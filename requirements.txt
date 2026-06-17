@@ -1,0 +1,10 @@
+# bpytop-gpu runtime dependencies
+# Install everything with:  pip3 install -r requirements.txt
+
+# Core resource monitoring (required on all platforms)
+psutil>=5.7.0
+
+# NVIDIA GPU monitoring (optional). Provides the "pynvml" module used by the GPU box.
+# Safe to install on non-NVIDIA systems, the GPU box just stays empty without a driver.
+# Not needed on Apple Silicon, which uses the built-in ioreg backend.
+nvidia-ml-py>=12.0.0

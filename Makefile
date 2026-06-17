@@ -2,7 +2,10 @@ PREFIX ?= /usr/local
 DOCDIR ?= $(PREFIX)/share/bpytop/doc
 
 all:
-	@echo Run \'make install\' to install bpytop.
+	@echo Run \'make deps\' to install python dependencies, then \'make install\' to install bpytop.
+
+deps:
+	@python3 -m pip install -r requirements.txt
 
 install:
 	@mkdir -p $(DESTDIR)$(PREFIX)/bin

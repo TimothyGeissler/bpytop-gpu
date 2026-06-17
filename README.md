@@ -101,10 +101,18 @@ This fork adds an optional GPU box that displays GPU utilization and memory usag
 
 Supported backends (auto-detected at startup, first available wins):
 
-* **NVIDIA** via the NVML library. Requires the `pynvml` package and a working NVIDIA driver.
-  Install with `pip3 install pynvml` (or `pip3 install bpytop[nvidia]`).
+* **NVIDIA** via the NVML library. Requires the `nvidia-ml-py` package (provides the
+  `pynvml` module) and a working NVIDIA driver.
 * **Apple Silicon** via `ioreg`. No extra dependencies or root privileges required.
   Memory is reported from the unified memory pool.
+
+The easiest way to install everything (core + NVIDIA support) is:
+
+``` bash
+pip3 install -r requirements.txt
+```
+
+or, from the repo, `make deps`. On Apple Silicon you only need `psutil`.
 
 The GPU box is hidden by default. Toggle it with the `5` key, the options menu
 (`shown_boxes`), or by adding `gpu` to `shown_boxes` in the config / `-b` argument,
