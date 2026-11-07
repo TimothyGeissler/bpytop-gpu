@@ -302,6 +302,9 @@ DEFAULT_THEME: Dict[str, str] = {
 	"available_start" : "#292107",
 	"available_mid" : "#ffd77a",
 	"available_end" : "#ffb814",
+	"buffers_start" : "#12203a",
+	"buffers_mid" : "#4a7fd6",
+	"buffers_end" : "#8fc2ff",
 	"used_start" : "#3b1f1c",
 	"used_mid" : "#d9626d",
 	"used_end" : "#ff4769",
@@ -1269,7 +1272,7 @@ class Theme:
 	cached: Dict[str, Dict[str, str]] = { "Default" : DEFAULT_THEME }
 	current: str = ""
 
-	main_bg = main_fg = title = hi_fg = selected_bg = selected_fg = inactive_fg = proc_misc = cpu_box = mem_box = net_box = proc_box = div_line = temp_start = temp_mid = temp_end = cpu_start = cpu_mid = cpu_end = free_start = free_mid = free_end = cached_start = cached_mid = cached_end = available_start = available_mid = available_end = used_start = used_mid = used_end = download_start = download_mid = download_end = upload_start = upload_mid = upload_end = graph_text = meter_bg = process_start = process_mid = process_end = Colors.default
+	main_bg = main_fg = title = hi_fg = selected_bg = selected_fg = inactive_fg = proc_misc = cpu_box = mem_box = net_box = proc_box = div_line = temp_start = temp_mid = temp_end = cpu_start = cpu_mid = cpu_end = free_start = free_mid = free_end = cached_start = cached_mid = cached_end = available_start = available_mid = available_end = buffers_start = buffers_mid = buffers_end = used_start = used_mid = used_end = download_start = download_mid = download_end = upload_start = upload_mid = upload_end = graph_text = meter_bg = process_start = process_mid = process_end = Colors.default
 
 	gradient: Dict[str, List[str]] = {
 		"temp" : [],
@@ -1277,6 +1280,7 @@ class Theme:
 		"free" : [],
 		"cached" : [],
 		"available" : [],
+		"buffers" : [],
 		"used" : [],
 		"download" : [],
 		"upload" : [],
@@ -2164,7 +2168,7 @@ class MemBox(Box):
 	buffer: str = "mem"
 	swap_on: bool = CONFIG.show_swap
 	Box.buffers.append(buffer)
-	mem_names: List[str] = ["used", "available", "cached", "free"]
+	mem_names: List[str] = ["used", "free", "buffers", "cached"]
 	swap_names: List[str] = ["used", "free"]
 
 	@classmethod
@@ -3379,7 +3383,10 @@ class GpuBackend:
 	def sample(self): return None
 
 class NvmlGpuBackend(GpuBackend):
-	'''NVIDIA GPU backend using the NVML library through pynvml. Tested on systems with NVIDIA drivers.'''
+	'''NVIDIA GPU backend using the NVML library through pynvml.
+	Supports discrete GPUs (per-device VRAM) and unified-memory SoCs such as the
+	NVIDIA GB10 on the DGX Spark, where nvmlDeviceGetMemoryInfo is not supported and
+	memory is instead reported from the per-process allocation table over the shared pool.'''
 	name = "nvidia"
 	def __init__(self):
 		self._handle = None
@@ -3404,30 +3411,54 @@ class NvmlGpuBackend(GpuBackend):
 		except Exception:
 			return "NVIDIA GPU"
 
-	def sample(self):
-		if not self._initialized: return None
+	def _memory(self) -> Tuple[int, int]:
+		'''Return (used, total) memory in bytes.
+		Discrete GPUs: per-device VRAM. Unified-memory SoCs (e.g. NVIDIA GB10 / DGX
+		Spark): nvmlDeviceGetMemoryInfo is not supported, so usage is the sum of the
+		per-process GPU allocations and the total is the shared unified-memory pool.'''
 		try:
-			st = GpuStats()
-			util = pynvml.nvmlDeviceGetUtilizationRates(self._handle)
-			st.utilization = int(util.gpu)
 			mem = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
-			st.mem_used = int(mem.used)
-			st.mem_total = int(mem.total)
+			return int(mem.used), int(mem.total)
+		except Exception:
+			#* Unified-memory SoC (e.g. GB10): device-level VRAM is unavailable, so
+			#* derive usage from the per-process allocation table. A single PID can
+			#* appear in both the compute and graphics lists; keep the max per PID.
+			per_pid: Dict[int, int] = {}
+			for getter in (pynvml.nvmlDeviceGetComputeRunningProcesses,
+							pynvml.nvmlDeviceGetGraphicsRunningProcesses):
+				try:
+					for proc in getter(self._handle):
+						per_pid[proc.pid] = max(per_pid.get(proc.pid, 0), int(proc.usedGpuMemory))
+				except Exception:
+					pass
+			total = int(psutil.virtual_memory().total) if psutil is not None else 0
+			return sum(per_pid.values()), total
+
+	def sample(self) -> GpuStats:
+		if not self._initialized: return None
+		#* Each metric is best-effort: on some systems (e.g. GB10) a single NVML call
+		#* is not supported, and that must not blank out the metrics that do work.
+		st = GpuStats()
+		try:
+			st.utilization = int(pynvml.nvmlDeviceGetUtilizationRates(self._handle).gpu)
+		except Exception:
+			pass
+		try:
+			st.mem_used, st.mem_total = self._memory()
 			st.mem_percent = round(st.mem_used / st.mem_total * 100) if st.mem_total else 0
-			try:
-				st.temp = int(pynvml.nvmlDeviceGetTemperature(self._handle, pynvml.NVML_TEMPERATURE_GPU))
-				st.has_temp = True
-			except Exception:
-				pass
-			try:
-				st.power = round(pynvml.nvmlDeviceGetPowerUsage(self._handle) / 1000)
-				st.has_power = True
-			except Exception:
-				pass
-			return st
-		except Exception as e:
-			errlog.exception(f'NVML GPU sample failed: {e}')
-			return None
+		except Exception:
+			pass
+		try:
+			st.temp = int(pynvml.nvmlDeviceGetTemperature(self._handle, pynvml.NVML_TEMPERATURE_GPU))
+			st.has_temp = True
+		except Exception:
+			pass
+		try:
+			st.power = round(pynvml.nvmlDeviceGetPowerUsage(self._handle) / 1000)
+			st.has_power = True
+		except Exception:
+			pass
+		return st
 
 class AppleGpuBackend(GpuBackend):
 	'''Apple Silicon GPU backend, reads utilization and unified memory usage from ioreg (no root required).'''
@@ -3566,8 +3597,14 @@ class MemCollector(Collector):
 			cls.values["cached"] = mem.cached
 		else:
 			cls.values["cached"] = mem.active
+		#* buffers is 0 on macOS/BSD (no /proc/buffers); keeps the rows coherent on Linux
+		cls.values["buffers"] = getattr(mem, "buffers", 0)
 		cls.values["total"], cls.values["free"], cls.values["available"] = mem.total, mem.free, mem.available
-		cls.values["used"] = cls.values["total"] - cls.values["available"]
+		#* used is the residual so the four rows partition the on-device total exactly:
+		#   used + free + buffers + cached == total  (classic `free` breakdown)
+		#* Replaces the old overlapping set (used, available, cached, free) whose
+		#   percentages summed to well over 100% because available ~= free + cached.
+		cls.values["used"] = max(0, cls.values["total"] - cls.values["free"] - cls.values["buffers"] - cls.values["cached"])
 
 		for key, value in cls.values.items():
 			cls.string[key] = floating_humanizer(value)

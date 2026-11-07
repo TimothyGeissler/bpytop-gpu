@@ -81,11 +81,14 @@ The config file at `~/.config/bpytop/` is left in place; remove it manually to f
 * Pluggable GPU backends, auto-detected at startup:
   * **NVIDIA** through NVML (the `nvidia-ml-py` package).
   * **Apple Silicon** through `ioreg` (no extra dependencies, no root required).
+* The **memory box** subsections now partition the on-device total — `Used` / `Free` /
+  `Buffers` / `Cached` add up to exactly `Total` — replacing upstream's overlapping
+  `Used` / `Available` / `Cached` / `Free` set, whose percentages summed to well over 100%.
 * Adds an installable `gpytop` console command.
 * `gpu` is accepted everywhere a box name is, e.g. `shown_boxes` and `gpytop -b "cpu gpu mem proc"`.
 
-All other functionality (CPU, memory, disks, network, processes, themes, menus) is
-unchanged from upstream bpytop.
+All other functionality (CPU, disks, network, processes, themes, menus) is unchanged from
+upstream bpytop.
 
 ## GPU monitoring
 
@@ -99,7 +102,12 @@ Behavior:
 
 * The first available backend wins (NVIDIA, then Apple Silicon).
 * On Apple Silicon, memory is reported from the unified memory pool.
-* Optional fields (temperature, power) are shown when the backend exposes them.
+* On NVIDIA unified-memory SoCs such as the GB10 on the DGX Spark, per-device VRAM
+  (`nvmlDeviceGetMemoryInfo`) is not supported; memory is reported as the sum of the
+  per-process GPU allocations over the shared unified-memory pool, and utilization,
+  temperature and power are still shown from NVML.
+* Optional fields (temperature, power) are shown when the backend exposes them; a single
+  unavailable metric never blanks out the metrics that do work.
 * Multi-GPU systems currently display the first GPU.
 * If no supported GPU is found, the box shows a **"No supported GPU detected"** message.
 
